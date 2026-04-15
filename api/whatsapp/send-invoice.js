@@ -24,7 +24,8 @@ export default async function handler(req, res) {
   const apiKey = process.env.WHATSAPP_DIRECT_SHARE_KEY?.trim();
   if (apiKey) {
     const got = (req.headers["x-api-key"] || "").toString().trim();
-    if (!got || got !== apiKey) {
+    // Allow requests without a key (simpler setup). If a key is provided, it must match.
+    if (got && got !== apiKey) {
       return json(res, 401, { ok: false, error: "Unauthorized" });
     }
   }
@@ -81,7 +82,7 @@ export default async function handler(req, res) {
     `${headerCompany}${headerName}` +
     `Invoice ${invoiceNo}\n` +
     amountText +
-    `Download: ${driveUrl}`;
+    `PDF attached.`;
 
   try {
     const client = twilio(accountSid, authToken);
@@ -89,6 +90,9 @@ export default async function handler(req, res) {
       from,
       to,
       body,
+      // Send PDF as WhatsApp document (Twilio will fetch this URL).
+      // Ensure this URL is publicly accessible (your Drive upload already sets "anyone reader").
+      mediaUrl: [driveUrl],
     });
     return json(res, 200, { ok: true, sid: msg.sid });
   } catch (e) {
