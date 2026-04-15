@@ -24,7 +24,8 @@ export default async function handler(req, res) {
   const apiKey = process.env.WHATSAPP_DIRECT_SHARE_KEY?.trim();
   if (apiKey) {
     const got = (req.headers["x-api-key"] || "").toString().trim();
-    if (!got || got !== apiKey) {
+    // Allow requests without a key (simpler setup). If a key is provided, it must match.
+    if (got && got !== apiKey) {
       return json(res, 401, { ok: false, error: "Unauthorized" });
     }
   }
@@ -69,6 +70,12 @@ export default async function handler(req, res) {
     ? toPhoneE164
     : `whatsapp:${toPhoneE164}`;
 
+  const proto =
+    (req.headers["x-forwarded-proto"] || "https").toString().split(",")[0].trim() ||
+    "https";
+  const host = (req.headers["x-forwarded-host"] || req.headers.host || "").toString().trim();
+  const baseUrl = host ? `${proto}://${host}` : "";
+
   const amountText =
     amount === undefined || amount === null || amount === ""
       ? ""
@@ -81,7 +88,16 @@ export default async function handler(req, res) {
     `${headerCompany}${headerName}` +
     `Invoice ${invoiceNo}\n` +
     amountText +
-    `Download: ${driveUrl}`;
+    `PDF attached.`;
+
+  // Use a proxy URL so Twilio/WhatsApp receives correct PDF headers + filename,
+  // which improves WhatsApp in-chat preview rendering.
+  const fileNameSafe = `Invoice_${String(invoiceNo).replaceAll(/[^a-zA-Z0-9._-]/g, "_")}.pdf`;
+  const mediaUrl = baseUrl
+    ? `${baseUrl}/api/whatsapp/pdf?driveUrl=${encodeURIComponent(driveUrl)}&name=${encodeURIComponent(
+        fileNameSafe
+      )}`
+    : driveUrl;
 
   try {
     const client = twilio(accountSid, authToken);
@@ -89,6 +105,9 @@ export default async function handler(req, res) {
       from,
       to,
       body,
+      // Send PDF as WhatsApp document (Twilio will fetch this URL).
+      // Ensure this URL is publicly accessible (your Drive upload already sets "anyone reader").
+      mediaUrl: [mediaUrl],
     });
     return json(res, 200, { ok: true, sid: msg.sid });
   } catch (e) {
