@@ -133,9 +133,13 @@ export default async function handler(req, res) {
     }
 
     const t = company.twilio || {};
-    const accountSid = (t.accountSid || "").toString().trim();
-    const authToken = (t.authToken || "").toString().trim();
-    const from = (t.whatsappFrom || "").toString().trim(); // e.g. "whatsapp:+14155238886"
+    const accountSidRaw = t.accountSid;
+    const authTokenRaw = t.authToken;
+    const fromRaw = t.whatsappFrom;
+
+    const accountSid = (accountSidRaw || "").toString().trim();
+    const authToken = (authTokenRaw || "").toString().trim();
+    const from = (fromRaw || "").toString().trim(); // e.g. "whatsapp:+14155238886"
 
     if (!accountSid || !authToken || !from) {
       return json(res, 400, {
@@ -151,6 +155,20 @@ export default async function handler(req, res) {
                 hasAccountSid: !!accountSid,
                 hasAuthToken: !!authToken,
                 hasWhatsappFrom: !!from,
+                whatsappFromType:
+                  fromRaw === null
+                    ? "null"
+                    : Array.isArray(fromRaw)
+                      ? "array"
+                      : typeof fromRaw,
+                whatsappFromLen: typeof fromRaw === "string" ? fromRaw.length : null,
+                whatsappFromTrimLen: from.length,
+                whatsappFromPreview:
+                  typeof fromRaw === "string"
+                    ? fromRaw.slice(0, 24)
+                    : fromRaw === undefined
+                      ? "undefined"
+                      : null,
                 twilioKeys: company.twilio
                   ? Object.keys(company.twilio).slice(0, 20)
                   : [],
