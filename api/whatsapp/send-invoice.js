@@ -7,6 +7,10 @@ function json(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
+function isDebug() {
+  return (process.env.DEBUG_WHATSAPP_DIRECT_SHARE || "").toString().trim() === "1";
+}
+
 function getFirebaseAdmin() {
   if (admin.apps.length) return admin;
   const raw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON?.trim();
@@ -102,7 +106,13 @@ export default async function handler(req, res) {
       .doc(`users/${decoded.uid}/companies/${String(companyId).trim()}`);
     const companySnap = await companyRef.get();
     if (!companySnap.exists) {
-      return json(res, 404, { ok: false, error: "Company not found" });
+      return json(res, 404, {
+        ok: false,
+        error: "Company not found",
+        ...(isDebug()
+          ? { debug: { uid: decoded.uid, companyId: String(companyId).trim() } }
+          : {}),
+      });
     }
     const company = companySnap.data() || {};
 
@@ -110,6 +120,15 @@ export default async function handler(req, res) {
       return json(res, 403, {
         ok: false,
         error: "WhatsApp direct share is disabled for this company",
+        ...(isDebug()
+          ? {
+              debug: {
+                uid: decoded.uid,
+                companyId: String(companyId).trim(),
+                isWhatsappDirectShare: company.isWhatsappDirectShare,
+              },
+            }
+          : {}),
       });
     }
 
@@ -123,6 +142,21 @@ export default async function handler(req, res) {
         ok: false,
         error:
           "Twilio is not configured for this company. Set twilio.accountSid, twilio.authToken, twilio.whatsappFrom in Firestore.",
+        ...(isDebug()
+          ? {
+              debug: {
+                uid: decoded.uid,
+                companyId: String(companyId).trim(),
+                hasTwilioMap: !!company.twilio,
+                hasAccountSid: !!accountSid,
+                hasAuthToken: !!authToken,
+                hasWhatsappFrom: !!from,
+                twilioKeys: company.twilio
+                  ? Object.keys(company.twilio).slice(0, 20)
+                  : [],
+              },
+            }
+          : {}),
       });
     }
 
