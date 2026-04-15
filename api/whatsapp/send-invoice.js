@@ -7,6 +7,36 @@ function json(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
+function getFirebaseAdmin() {
+  if (admin.apps.length) return admin;
+  const raw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON?.trim();
+  if (!raw) {
+    throw new Error(
+      "Server not configured. Set FIREBASE_SERVICE_ACCOUNT_JSON (service account JSON string)."
+    );
+  }
+  let serviceAccount;
+  try {
+    serviceAccount = JSON.parse(raw);
+  } catch (e) {
+    throw new Error(
+      `Invalid FIREBASE_SERVICE_ACCOUNT_JSON (must be valid JSON). ${e?.message || e}`
+    );
+  }
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount),
+  });
+  return admin;
+}
+
+async function verifyFirebaseIdToken(req) {
+  const auth = (req.headers.authorization || "").toString().trim();
+  const idToken = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
+  if (!idToken) return null;
+  const a = getFirebaseAdmin();
+  return await a.auth().verifyIdToken(idToken);
+}
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let data = "";
@@ -41,6 +71,7 @@ export default async function handler(req, res) {
     }
 
     const {
+      companyId,
       toPhoneE164,
       invoiceNo,
       amount,
@@ -49,22 +80,49 @@ export default async function handler(req, res) {
       companyName,
     } = payload || {};
 
-    if (!toPhoneE164 || !invoiceNo || !driveUrl) {
+    if (!companyId || !toPhoneE164 || !invoiceNo || !driveUrl) {
       return json(res, 400, {
         ok: false,
-        error: "Missing required fields: toPhoneE164, invoiceNo, driveUrl",
+        error:
+          "Missing required fields: companyId, toPhoneE164, invoiceNo, driveUrl",
       });
     }
 
-    const accountSid = process.env.TWILIO_ACCOUNT_SID?.trim();
-    const authToken = process.env.TWILIO_AUTH_TOKEN?.trim();
-    const from = process.env.TWILIO_WHATSAPP_FROM?.trim(); // e.g. "whatsapp:+14155238886"
+    const decoded = await verifyFirebaseIdToken(req);
+    if (!decoded?.uid) {
+      return json(res, 401, {
+        ok: false,
+        error: "Missing/invalid Authorization Bearer token",
+      });
+    }
+
+    const a = getFirebaseAdmin();
+    const companyRef = a
+      .firestore()
+      .doc(`users/${decoded.uid}/companies/${String(companyId).trim()}`);
+    const companySnap = await companyRef.get();
+    if (!companySnap.exists) {
+      return json(res, 404, { ok: false, error: "Company not found" });
+    }
+    const company = companySnap.data() || {};
+
+    if (company.isWhatsappDirectShare === false) {
+      return json(res, 403, {
+        ok: false,
+        error: "WhatsApp direct share is disabled for this company",
+      });
+    }
+
+    const t = company.twilio || {};
+    const accountSid = (t.accountSid || "").toString().trim();
+    const authToken = (t.authToken || "").toString().trim();
+    const from = (t.whatsappFrom || "").toString().trim(); // e.g. "whatsapp:+14155238886"
 
     if (!accountSid || !authToken || !from) {
-      return json(res, 500, {
+      return json(res, 400, {
         ok: false,
         error:
-          "Server not configured. Set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_FROM.",
+          "Twilio is not configured for this company. Set twilio.accountSid, twilio.authToken, twilio.whatsappFrom in Firestore.",
       });
     }
 
@@ -72,19 +130,7 @@ export default async function handler(req, res) {
       ? toPhoneE164
       : `whatsapp:${toPhoneE164}`;
 
-    const amountText =
-      amount === undefined || amount === null || amount === ""
-        ? ""
-        : `Amount: ₹${amount}\n`;
-
-    const headerName = customerName ? `Hi ${customerName},\n` : "";
-    const headerCompany = companyName ? `${companyName}\n` : "";
-
-    const body =
-      `${headerCompany}${headerName}` +
-      `Invoice ${invoiceNo}\n` +
-      amountText +
-      `PDF attached.`;
+    // User request: send ONLY the PDF (no text message).
 
     // Use a proxy URL so Twilio/WhatsApp receives correct PDF headers + filename,
     // which improves WhatsApp in-chat preview rendering.
@@ -116,7 +162,6 @@ export default async function handler(req, res) {
     const msg = await client.messages.create({
       from,
       to,
-      body,
       mediaUrl: [mediaUrl],
     });
     return json(res, 200, { ok: true, sid: msg.sid });
