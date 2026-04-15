@@ -133,9 +133,24 @@ export default async function handler(req, res) {
     }
 
     const t = company.twilio || {};
-    const accountSidRaw = t.accountSid;
-    const authTokenRaw = t.authToken;
-    const fromRaw = t.whatsappFrom;
+
+    // Be tolerant to accidental key casing/whitespace differences in Firestore map keys.
+    // e.g. "whatsappFrom", "whatsappFrom ", "WhatsAppFrom"
+    const tEntries =
+      t && typeof t === "object" && !Array.isArray(t)
+        ? Object.entries(t)
+        : [];
+    const tGetLoose = (expectedKey) => {
+      const ek = String(expectedKey).toLowerCase();
+      for (const [k, v] of tEntries) {
+        if (String(k).trim().toLowerCase() === ek) return v;
+      }
+      return undefined;
+    };
+
+    const accountSidRaw = t.accountSid ?? tGetLoose("accountSid");
+    const authTokenRaw = t.authToken ?? tGetLoose("authToken");
+    const fromRaw = t.whatsappFrom ?? tGetLoose("whatsappFrom");
 
     const accountSid = (accountSidRaw || "").toString().trim();
     const authToken = (authTokenRaw || "").toString().trim();
@@ -182,7 +197,22 @@ export default async function handler(req, res) {
       ? toPhoneE164
       : `whatsapp:${toPhoneE164}`;
 
-    // User request: send ONLY the PDF (no text message).
+    const lines = [];
+    if (companyName && String(companyName).trim()) {
+      lines.push(String(companyName).trim());
+    }
+    if (customerName && String(customerName).trim()) {
+      lines.push(`Hi ${String(customerName).trim()},`);
+    }
+    lines.push(`Invoice ${String(invoiceNo).trim()}`);
+    if (typeof amount === "number" && Number.isFinite(amount)) {
+      // Keep it simple: don't format currency locale-side on backend.
+      lines.push(`Amount: ₹${amount}`);
+    } else if (amount !== undefined && amount !== null && String(amount).trim()) {
+      lines.push(`Amount: ₹${String(amount).trim()}`);
+    }
+    lines.push("PDF attached.");
+    const body = lines.join("\n");
 
     // Use a proxy URL so Twilio/WhatsApp receives correct PDF headers + filename,
     // which improves WhatsApp in-chat preview rendering.
@@ -214,6 +244,7 @@ export default async function handler(req, res) {
     const msg = await client.messages.create({
       from,
       to,
+      body,
       mediaUrl: [mediaUrl],
     });
     return json(res, 200, { ok: true, sid: msg.sid });
