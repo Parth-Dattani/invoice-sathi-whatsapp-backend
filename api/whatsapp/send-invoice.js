@@ -89,6 +89,7 @@ export default async function handler(req, res) {
     `Invoice ${invoiceNo}\n` +
     amountText +
     `PDF attached.`;
+<<<<<<< HEAD
 
   // Use a proxy URL so Twilio/WhatsApp receives correct PDF headers + filename,
   // which improves WhatsApp in-chat preview rendering.
@@ -98,6 +99,8 @@ export default async function handler(req, res) {
         fileNameSafe
       )}`
     : driveUrl;
+=======
+>>>>>>> f25e402730e82b3c44b14ab14b93c45b675f1cc5
 
   try {
     const client = twilio(accountSid, authToken);
@@ -107,7 +110,11 @@ export default async function handler(req, res) {
       body,
       // Send PDF as WhatsApp document (Twilio will fetch this URL).
       // Ensure this URL is publicly accessible (your Drive upload already sets "anyone reader").
+<<<<<<< HEAD
       mediaUrl: [mediaUrl],
+=======
+      mediaUrl: [driveUrl],
+>>>>>>> f25e402730e82b3c44b14ab14b93c45b675f1cc5
     });
     return json(res, 200, { ok: true, sid: msg.sid });
   } catch (e) {
