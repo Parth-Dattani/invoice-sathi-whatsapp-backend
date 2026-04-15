@@ -7,6 +7,7 @@
     "node": ">=18"
   },
   "dependencies": {
+    "firebase-admin": "^13.5.0",
     "twilio": "^5.8.0"
   }
 }
