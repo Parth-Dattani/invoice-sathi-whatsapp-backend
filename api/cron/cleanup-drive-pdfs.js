@@ -81,15 +81,16 @@ async function listPdfFileIds(accessToken, folderId) {
 }
 
 async function trashFile(accessToken, fileId) {
+  // Drive API v3: move to Trash by PATCHing `trashed=true`.
   const r = await fetch(
-    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/trash`,
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?supportsAllDrives=true`,
     {
-      method: "POST",
+      method: "PATCH",
       headers: {
         Authorization: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({}),
+      body: JSON.stringify({ trashed: true }),
     }
   );
   if (!r.ok) {
