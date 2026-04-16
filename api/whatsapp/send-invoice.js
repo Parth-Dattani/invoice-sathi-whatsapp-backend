@@ -1,6 +1,92 @@
 import twilio from "twilio";
 import admin from "firebase-admin";
 
+/** E.164 or whatsapp:+... → digits only (Meta Cloud API `to` field). */
+function toWhatsAppDigits(phone) {
+  const s = String(phone ?? "").trim();
+  const noPrefix = s.replace(/^whatsapp:/i, "").trim();
+  const digits = noPrefix.replace(/\D/g, "");
+  return digits;
+}
+
+function entriesLoose(obj) {
+  return obj && typeof obj === "object" && !Array.isArray(obj)
+    ? Object.entries(obj)
+    : [];
+}
+
+function getLoose(map, expectedKey) {
+  const ek = String(expectedKey).toLowerCase();
+  for (const [k, v] of entriesLoose(map)) {
+    if (String(k).trim().toLowerCase() === ek) return v;
+  }
+  return undefined;
+}
+
+/**
+ * Send document + caption via Meta WhatsApp Cloud API (Graph).
+ * @see https://developers.facebook.com/docs/whatsapp/cloud-api/guides/send-messages
+ */
+async function sendWhatsAppCloudDocument({
+  phoneNumberId,
+  accessToken,
+  graphApiVersion,
+  toDigits,
+  documentUrl,
+  caption,
+  filename,
+}) {
+  const v =
+    (graphApiVersion || "").toString().trim() ||
+    process.env.WHATSAPP_META_GRAPH_VERSION?.trim() ||
+    "v21.0";
+  const url = `https://graph.facebook.com/${v}/${encodeURIComponent(
+    String(phoneNumberId).trim()
+  )}/messages`;
+  const cap =
+    typeof caption === "string" && caption.length > 1024
+      ? `${caption.slice(0, 1021)}...`
+      : caption;
+
+  const r = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${String(accessToken).trim()}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      messaging_product: "whatsapp",
+      to: toDigits,
+      type: "document",
+      document: {
+        link: documentUrl,
+        caption: cap,
+        filename: String(filename || "invoice.pdf").replace(/[^\w.\-]/g, "_").slice(0, 240),
+      },
+    }),
+  });
+
+  const text = await r.text();
+  let data;
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    data = { raw: text };
+  }
+  if (!r.ok) {
+    const msg =
+      data?.error?.message ||
+      data?.error?.error_user_msg ||
+      text ||
+      `Meta HTTP ${r.status}`;
+    const err = new Error(msg);
+    err.metaHttpStatus = r.status;
+    err.metaBody = data;
+    throw err;
+  }
+  return data;
+}
+
 function json(res, status, body) {
   res.statusCode = status;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
@@ -132,71 +218,6 @@ export default async function handler(req, res) {
       });
     }
 
-    const t = company.twilio || {};
-
-    // Be tolerant to accidental key casing/whitespace differences in Firestore map keys.
-    // e.g. "whatsappFrom", "whatsappFrom ", "WhatsAppFrom"
-    const tEntries =
-      t && typeof t === "object" && !Array.isArray(t)
-        ? Object.entries(t)
-        : [];
-    const tGetLoose = (expectedKey) => {
-      const ek = String(expectedKey).toLowerCase();
-      for (const [k, v] of tEntries) {
-        if (String(k).trim().toLowerCase() === ek) return v;
-      }
-      return undefined;
-    };
-
-    const accountSidRaw = t.accountSid ?? tGetLoose("accountSid");
-    const authTokenRaw = t.authToken ?? tGetLoose("authToken");
-    const fromRaw = t.whatsappFrom ?? tGetLoose("whatsappFrom");
-
-    const accountSid = (accountSidRaw || "").toString().trim();
-    const authToken = (authTokenRaw || "").toString().trim();
-    const from = (fromRaw || "").toString().trim(); // e.g. "whatsapp:+14155238886"
-
-    if (!accountSid || !authToken || !from) {
-      return json(res, 400, {
-        ok: false,
-        error:
-          "Twilio is not configured for this company. Set twilio.accountSid, twilio.authToken, twilio.whatsappFrom in Firestore.",
-        ...(isDebug()
-          ? {
-              debug: {
-                uid: decoded.uid,
-                companyId: String(companyId).trim(),
-                hasTwilioMap: !!company.twilio,
-                hasAccountSid: !!accountSid,
-                hasAuthToken: !!authToken,
-                hasWhatsappFrom: !!from,
-                whatsappFromType:
-                  fromRaw === null
-                    ? "null"
-                    : Array.isArray(fromRaw)
-                      ? "array"
-                      : typeof fromRaw,
-                whatsappFromLen: typeof fromRaw === "string" ? fromRaw.length : null,
-                whatsappFromTrimLen: from.length,
-                whatsappFromPreview:
-                  typeof fromRaw === "string"
-                    ? fromRaw.slice(0, 24)
-                    : fromRaw === undefined
-                      ? "undefined"
-                      : null,
-                twilioKeys: company.twilio
-                  ? Object.keys(company.twilio).slice(0, 20)
-                  : [],
-              },
-            }
-          : {}),
-      });
-    }
-
-    const to = toPhoneE164.startsWith("whatsapp:")
-      ? toPhoneE164
-      : `whatsapp:${toPhoneE164}`;
-
     const lines = [];
     if (companyName && String(companyName).trim()) {
       lines.push(String(companyName).trim());
@@ -214,8 +235,11 @@ export default async function handler(req, res) {
     lines.push("PDF attached.");
     const body = lines.join("\n");
 
-    // Use a proxy URL so Twilio/WhatsApp receives correct PDF headers + filename,
-    // which improves WhatsApp in-chat preview rendering.
+    // Public HTTPS URL with PDF headers (Twilio + Meta Cloud API fetch this link).
+    const fileNameSafe = `Invoice_${String(invoiceNo).replace(
+      /[^a-zA-Z0-9._-]/g,
+      "_"
+    )}.pdf`;
     let mediaUrl = driveUrl;
     try {
       const proto = (req.headers["x-forwarded-proto"] || "https")
@@ -226,10 +250,6 @@ export default async function handler(req, res) {
         .toString()
         .trim();
       const baseUrl = host ? `${proto}://${host}` : "";
-      const fileNameSafe = `Invoice_${String(invoiceNo).replace(
-        /[^a-zA-Z0-9._-]/g,
-        "_"
-      )}.pdf`;
       if (baseUrl) {
         mediaUrl = `${baseUrl}/api/whatsapp/pdf?driveUrl=${encodeURIComponent(
           driveUrl
@@ -240,6 +260,87 @@ export default async function handler(req, res) {
       mediaUrl = driveUrl;
     }
 
+    const wc = company.whatsappCloud || {};
+    const phoneNumberIdRaw =
+      wc.phoneNumberId ?? getLoose(wc, "phoneNumberId");
+    const accessTokenMetaRaw =
+      wc.accessToken ?? getLoose(wc, "accessToken");
+    const graphApiVersionRaw =
+      wc.graphApiVersion ?? getLoose(wc, "graphApiVersion");
+
+    const phoneNumberId = (phoneNumberIdRaw || "").toString().trim();
+    const accessTokenMeta = (accessTokenMetaRaw || "").toString().trim();
+    const graphApiVersion = (graphApiVersionRaw || "").toString().trim();
+
+    if (phoneNumberId && accessTokenMeta) {
+      const toDigits = toWhatsAppDigits(toPhoneE164);
+      if (!toDigits || toDigits.length < 8) {
+        return json(res, 400, {
+          ok: false,
+          error:
+            "Invalid toPhoneE164 for WhatsApp Cloud API (use full international number, e.g. +91xxxxxxxxxx).",
+        });
+      }
+      const metaPayload = await sendWhatsAppCloudDocument({
+        phoneNumberId,
+        accessToken: accessTokenMeta,
+        graphApiVersion: graphApiVersion || undefined,
+        toDigits,
+        documentUrl: mediaUrl,
+        caption: body,
+        filename: fileNameSafe,
+      });
+      const wid = metaPayload?.messages?.[0]?.id;
+      return json(res, 200, {
+        ok: true,
+        provider: "meta",
+        messageId: wid,
+        ...(isDebug() ? { debugMeta: metaPayload } : {}),
+      });
+    }
+
+    const t = company.twilio || {};
+    const accountSidRaw = t.accountSid ?? getLoose(t, "accountSid");
+    const authTokenRaw = t.authToken ?? getLoose(t, "authToken");
+    const fromRaw = t.whatsappFrom ?? getLoose(t, "whatsappFrom");
+
+    const accountSid = (accountSidRaw || "").toString().trim();
+    const authToken = (authTokenRaw || "").toString().trim();
+    const from = (fromRaw || "").toString().trim();
+
+    if (!accountSid || !authToken || !from) {
+      return json(res, 400, {
+        ok: false,
+        error:
+          "WhatsApp sender not configured. For Meta Cloud API set whatsappCloud.phoneNumberId and whatsappCloud.accessToken on the company document, or for Twilio set twilio.accountSid, twilio.authToken, twilio.whatsappFrom.",
+        ...(isDebug()
+          ? {
+              debug: {
+                uid: decoded.uid,
+                companyId: String(companyId).trim(),
+                hasWhatsappCloudMap: !!company.whatsappCloud,
+                hasPhoneNumberId: !!phoneNumberId,
+                hasMetaAccessToken: !!accessTokenMeta,
+                hasTwilioMap: !!company.twilio,
+                hasAccountSid: !!accountSid,
+                hasAuthToken: !!authToken,
+                hasWhatsappFrom: !!from,
+                twilioKeys: company.twilio
+                  ? Object.keys(company.twilio).slice(0, 20)
+                  : [],
+                whatsappCloudKeys: company.whatsappCloud
+                  ? Object.keys(company.whatsappCloud).slice(0, 20)
+                  : [],
+              },
+            }
+          : {}),
+      });
+    }
+
+    const to = toPhoneE164.startsWith("whatsapp:")
+      ? toPhoneE164
+      : `whatsapp:${toPhoneE164}`;
+
     const client = twilio(accountSid, authToken);
     const msg = await client.messages.create({
       from,
@@ -247,7 +348,7 @@ export default async function handler(req, res) {
       body,
       mediaUrl: [mediaUrl],
     });
-    return json(res, 200, { ok: true, sid: msg.sid });
+    return json(res, 200, { ok: true, provider: "twilio", sid: msg.sid });
   } catch (e) {
     console.error("[send-invoice] unhandled", e);
     return json(res, 500, { ok: false, error: e?.message || String(e) });
