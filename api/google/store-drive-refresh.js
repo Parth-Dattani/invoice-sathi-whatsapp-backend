@@ -141,7 +141,7 @@ export default async function handler(req, res) {
     await a.firestore().doc(`users/${decoded.uid}`).set(
       {
         googleDriveRefreshToken: refreshToken,
-        googleDriveRefreshTokenUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       },
       { merge: true }
     );
