@@ -38,6 +38,7 @@ async function sendWhatsAppCloudTemplate({
   languageCode,
   bodyParameterTexts,
   headerDocument,
+  templateNamespace,
 }) {
   const v =
     (graphApiVersion || "").toString().trim() ||
@@ -76,6 +77,22 @@ async function sendWhatsAppCloudTemplate({
     });
   }
 
+  const langCode = String(languageCode || "en").trim() || "en";
+  const templatePayload = {
+    name: String(templateName || "").trim(),
+    language: {
+      code: langCode,
+      policy: "deterministic",
+    },
+  };
+  const ns = (templateNamespace || "").toString().trim();
+  if (ns) {
+    templatePayload.namespace = ns;
+  }
+  if (components.length) {
+    templatePayload.components = components;
+  }
+
   const r = await fetch(url, {
     method: "POST",
     headers: {
@@ -86,11 +103,7 @@ async function sendWhatsAppCloudTemplate({
       messaging_product: "whatsapp",
       to: toDigits,
       type: "template",
-      template: {
-        name: String(templateName || "").trim(),
-        language: { code: String(languageCode || "en").trim() || "en" },
-        ...(components.length ? { components } : {}),
-      },
+      template: templatePayload,
     }),
   });
 
@@ -127,6 +140,29 @@ function isMetaTemplateTranslationError(err) {
 }
 
 /** Tries primary language, then common English variants for Meta (#132001). */
+function buildTemplateLanguageCandidates(primaryRaw, extraFromFirestore) {
+  const primary = (primaryRaw || "en").trim() || "en";
+  const candidates = [];
+  const push = (c) => {
+    const t = (c || "").trim();
+    if (t && !candidates.includes(t)) candidates.push(t);
+  };
+  push(primary);
+  if (Array.isArray(extraFromFirestore)) {
+    for (const x of extraFromFirestore) {
+      push(String(x ?? ""));
+    }
+  }
+  const pl = primary.toLowerCase();
+  if (pl === "en") push("en_US");
+  if (pl === "en_us") push("en");
+  push("en_US");
+  push("en");
+  push("en_GB");
+  push("en_IN");
+  return candidates;
+}
+
 async function sendWhatsAppCloudTemplateWithLanguageFallback({
   phoneNumberId,
   accessToken,
@@ -136,17 +172,13 @@ async function sendWhatsAppCloudTemplateWithLanguageFallback({
   languageCode,
   bodyParameterTexts,
   headerDocument,
+  templateNamespace,
+  extraLanguageCodes,
 }) {
-  const primary = (languageCode || "en").trim() || "en";
-  const candidates = [primary];
-  const push = (c) => {
-    const t = (c || "").trim();
-    if (t && !candidates.includes(t)) candidates.push(t);
-  };
-  if (primary.toLowerCase() === "en") push("en_US");
-  if (primary.toLowerCase() === "en_us") push("en");
-  push("en_US");
-  push("en");
+  const candidates = buildTemplateLanguageCandidates(
+    languageCode,
+    extraLanguageCodes
+  );
 
   let lastErr;
   for (let i = 0; i < candidates.length; i++) {
@@ -161,6 +193,7 @@ async function sendWhatsAppCloudTemplateWithLanguageFallback({
         languageCode: lang,
         bodyParameterTexts,
         headerDocument,
+        templateNamespace,
       });
     } catch (e) {
       lastErr = e;
@@ -447,6 +480,19 @@ export default async function handler(req, res) {
         .toString()
         .trim() || "en";
 
+      const invoiceTemplateNamespaceRaw =
+        wc.invoiceTemplateNamespace ??
+        wc.templateNamespace ??
+        getLoose(wc, "invoiceTemplateNamespace");
+      const invoiceTemplateNamespace = (invoiceTemplateNamespaceRaw ?? "")
+        .toString()
+        .trim();
+
+      const extraLangRaw = wc.invoiceTemplateLanguageCandidates;
+      const extraLanguageCodes = Array.isArray(extraLangRaw)
+        ? extraLangRaw.map((x) => String(x ?? "").trim()).filter(Boolean)
+        : [];
+
       const includePdfInBodyWhenNoHeader =
         wc.invoiceTemplateIncludePdfLink === true ||
         getLoose(wc, "invoiceTemplateIncludePdfLink") === true;
@@ -518,6 +564,8 @@ export default async function handler(req, res) {
               languageCode: invoiceTemplateLanguage,
               bodyParameterTexts,
               headerDocument,
+              templateNamespace: invoiceTemplateNamespace || undefined,
+              extraLanguageCodes,
             });
             break;
           } catch (e) {
