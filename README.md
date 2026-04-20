@@ -47,6 +47,13 @@ Set:
 - `whatsappDirectShareUrl` = `https://<your-vercel-domain>/api/whatsapp/send-invoice`
 - `whatsappDirectShareKey` = same as `WHATSAPP_DIRECT_SHARE_KEY` (if you set it)
 
+**Meta Cloud API — utility template (no 24h session):** on the same company document, under `whatsappCloud`:
+
+- `invoiceTemplateName` (string), e.g. `smartbiz_invoice` — when set, `/api/whatsapp/send-invoice` sends a **template** message instead of a document. Omit or use `""` to keep **document** mode.
+- `invoiceTemplateLanguage` (string, optional) — default `en`.
+- `invoiceTemplateBodyParams` (array of strings, optional) — must match your template’s `{{1}}`, `{{2}}`, … order. If omitted, the server sends `[companyName, customerName, invoiceNo, amount]` (4 texts).
+- `invoiceTemplateIncludePdfLink` (bool, optional) — if `true`, appends the public PDF URL as a 5th body parameter (only if your template has a fifth placeholder).
+
 ---
 
 ## Google Drive auto PDF delete (nightly)

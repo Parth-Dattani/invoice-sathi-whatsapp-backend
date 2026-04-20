@@ -27,6 +27,78 @@ function getLoose(map, expectedKey) {
  * Send document + caption via Meta WhatsApp Cloud API (Graph).
  * @see https://developers.facebook.com/docs/whatsapp/cloud-api/guides/send-messages
  */
+/**
+ * Utility template (e.g. smartbiz_invoice) — business-initiated without 24h session.
+ * Body parameter count must match the approved template in WhatsApp Manager.
+ * @see https://developers.facebook.com/docs/whatsapp/cloud-api/guides/send-messages#template-messages
+ */
+async function sendWhatsAppCloudTemplate({
+  phoneNumberId,
+  accessToken,
+  graphApiVersion,
+  toDigits,
+  templateName,
+  languageCode,
+  bodyParameterTexts,
+}) {
+  const v =
+    (graphApiVersion || "").toString().trim() ||
+    process.env.WHATSAPP_META_GRAPH_VERSION?.trim() ||
+    "v21.0";
+  const url = `https://graph.facebook.com/${v}/${encodeURIComponent(
+    String(phoneNumberId).trim()
+  )}/messages`;
+
+  const components = [];
+  if (bodyParameterTexts && bodyParameterTexts.length > 0) {
+    components.push({
+      type: "body",
+      parameters: bodyParameterTexts.map((t) => ({
+        type: "text",
+        text: String(t ?? "").slice(0, 1024),
+      })),
+    });
+  }
+
+  const r = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${String(accessToken).trim()}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      messaging_product: "whatsapp",
+      to: toDigits,
+      type: "template",
+      template: {
+        name: String(templateName || "").trim(),
+        language: { code: String(languageCode || "en").trim() || "en" },
+        ...(components.length ? { components } : {}),
+      },
+    }),
+  });
+
+  const text = await r.text();
+  let data;
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    data = { raw: text };
+  }
+  if (!r.ok) {
+    const msg =
+      data?.error?.message ||
+      data?.error?.error_user_msg ||
+      text ||
+      `Meta HTTP ${r.status}`;
+    const err = new Error(msg);
+    err.metaHttpStatus = r.status;
+    err.metaBody = data;
+    throw err;
+  }
+  return data;
+}
+
 async function sendWhatsAppCloudDocument({
   phoneNumberId,
   accessToken,
@@ -281,6 +353,74 @@ export default async function handler(req, res) {
             "Invalid toPhoneE164 for WhatsApp Cloud API (use full international number, e.g. +91xxxxxxxxxx).",
         });
       }
+
+      // Approved utility template (e.g. smartbiz_invoice) — set whatsappCloud.invoiceTemplateName on the company doc.
+      // Omit or set to "" to keep sending a document only (24h session may be required).
+      const invoiceTemplateNameRaw =
+        wc.invoiceTemplateName ?? getLoose(wc, "invoiceTemplateName");
+      const invoiceTemplateName = (invoiceTemplateNameRaw ?? "")
+        .toString()
+        .trim();
+      const invoiceTemplateLanguageRaw =
+        wc.invoiceTemplateLanguage ??
+        wc.invoiceTemplateLanguageCode ??
+        getLoose(wc, "invoiceTemplateLanguage");
+      const invoiceTemplateLanguage = (
+        invoiceTemplateLanguageRaw ?? "en"
+      )
+        .toString()
+        .trim() || "en";
+
+      let bodyParameterTexts = null;
+      const overrideParams = wc.invoiceTemplateBodyParams;
+      if (Array.isArray(overrideParams) && overrideParams.length > 0) {
+        bodyParameterTexts = overrideParams.map((x) => String(x ?? ""));
+      } else {
+        const co =
+          (companyName && String(companyName).trim()) || " ";
+        const cn =
+          (customerName && String(customerName).trim()) || "Customer";
+        const inv = String(invoiceNo).trim();
+        let amt = "₹0";
+        if (typeof amount === "number" && Number.isFinite(amount)) {
+          amt = `₹${amount}`;
+        } else if (
+          amount !== undefined &&
+          amount !== null &&
+          String(amount).trim()
+        ) {
+          amt = `₹${String(amount).trim()}`;
+        }
+        bodyParameterTexts = [co, cn, inv, amt];
+        const includeLink =
+          wc.invoiceTemplateIncludePdfLink === true ||
+          getLoose(wc, "invoiceTemplateIncludePdfLink") === true;
+        if (includeLink) {
+          bodyParameterTexts.push(String(mediaUrl));
+        }
+      }
+
+      if (invoiceTemplateName) {
+        const metaPayload = await sendWhatsAppCloudTemplate({
+          phoneNumberId,
+          accessToken: accessTokenMeta,
+          graphApiVersion: graphApiVersion || undefined,
+          toDigits,
+          templateName: invoiceTemplateName,
+          languageCode: invoiceTemplateLanguage,
+          bodyParameterTexts,
+        });
+        const wid = metaPayload?.messages?.[0]?.id;
+        return json(res, 200, {
+          ok: true,
+          provider: "meta",
+          sendMode: "template",
+          templateName: invoiceTemplateName,
+          messageId: wid,
+          ...(isDebug() ? { debugMeta: metaPayload } : {}),
+        });
+      }
+
       const metaPayload = await sendWhatsAppCloudDocument({
         phoneNumberId,
         accessToken: accessTokenMeta,
@@ -294,6 +434,7 @@ export default async function handler(req, res) {
       return json(res, 200, {
         ok: true,
         provider: "meta",
+        sendMode: "document",
         messageId: wid,
         ...(isDebug() ? { debugMeta: metaPayload } : {}),
       });
