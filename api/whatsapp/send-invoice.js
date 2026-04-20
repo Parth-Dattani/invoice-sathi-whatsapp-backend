@@ -37,6 +37,7 @@ async function sendWhatsAppCloudTemplate({
   templateName,
   languageCode,
   bodyParameterTexts,
+  headerDocument,
 }) {
   const v =
     (graphApiVersion || "").toString().trim() ||
@@ -47,6 +48,24 @@ async function sendWhatsAppCloudTemplate({
   )}/messages`;
 
   const components = [];
+  const hdrLink = (headerDocument?.link || "").toString().trim();
+  if (hdrLink) {
+    const fn = String(headerDocument?.filename || "invoice.pdf")
+      .replace(/[^\w.\-]/g, "_")
+      .slice(0, 240);
+    components.push({
+      type: "header",
+      parameters: [
+        {
+          type: "document",
+          document: {
+            link: hdrLink,
+            filename: fn,
+          },
+        },
+      ],
+    });
+  }
   if (bodyParameterTexts && bodyParameterTexts.length > 0) {
     components.push({
       type: "body",
@@ -116,6 +135,7 @@ async function sendWhatsAppCloudTemplateWithLanguageFallback({
   templateName,
   languageCode,
   bodyParameterTexts,
+  headerDocument,
 }) {
   const primary = (languageCode || "en").trim() || "en";
   const candidates = [primary];
@@ -140,6 +160,7 @@ async function sendWhatsAppCloudTemplateWithLanguageFallback({
         templateName,
         languageCode: lang,
         bodyParameterTexts,
+        headerDocument,
       });
     } catch (e) {
       lastErr = e;
@@ -426,11 +447,21 @@ export default async function handler(req, res) {
         .toString()
         .trim() || "en";
 
-      let bodyParameterTexts = null;
-      const overrideParams = wc.invoiceTemplateBodyParams;
-      if (Array.isArray(overrideParams) && overrideParams.length > 0) {
-        bodyParameterTexts = overrideParams.map((x) => String(x ?? ""));
-      } else {
+      const includePdfInBodyWhenNoHeader =
+        wc.invoiceTemplateIncludePdfLink === true ||
+        getLoose(wc, "invoiceTemplateIncludePdfLink") === true;
+      const docHeaderExplicitTrue =
+        wc.invoiceTemplateDocumentHeader === true ||
+        getLoose(wc, "invoiceTemplateDocumentHeader") === true;
+      const docHeaderExplicitFalse =
+        wc.invoiceTemplateDocumentHeader === false ||
+        getLoose(wc, "invoiceTemplateDocumentHeader") === false;
+
+      function buildInvoiceTemplateBodyTexts(forDocumentHeaderAttempt) {
+        const overrideParams = wc.invoiceTemplateBodyParams;
+        if (Array.isArray(overrideParams) && overrideParams.length > 0) {
+          return overrideParams.map((x) => String(x ?? ""));
+        }
         const co =
           (companyName && String(companyName).trim()) || " ";
         const cn =
@@ -446,25 +477,59 @@ export default async function handler(req, res) {
         ) {
           amt = `₹${String(amount).trim()}`;
         }
-        bodyParameterTexts = [co, cn, inv, amt];
-        const includeLink =
-          wc.invoiceTemplateIncludePdfLink === true ||
-          getLoose(wc, "invoiceTemplateIncludePdfLink") === true;
-        if (includeLink) {
-          bodyParameterTexts.push(String(mediaUrl));
+        const texts = [co, cn, inv, amt];
+        if (
+          !forDocumentHeaderAttempt &&
+          includePdfInBodyWhenNoHeader
+        ) {
+          texts.push(String(mediaUrl));
         }
+        return texts;
       }
 
       if (invoiceTemplateName) {
-        const metaPayload = await sendWhatsAppCloudTemplateWithLanguageFallback({
-          phoneNumberId,
-          accessToken: accessTokenMeta,
-          graphApiVersion: graphApiVersion || undefined,
-          toDigits,
-          templateName: invoiceTemplateName,
-          languageCode: invoiceTemplateLanguage,
-          bodyParameterTexts,
-        });
+        const attempts = [];
+        if (!docHeaderExplicitFalse && mediaUrl) {
+          attempts.push({ withDocHeader: true });
+        }
+        if (!docHeaderExplicitTrue) {
+          attempts.push({ withDocHeader: false });
+        }
+        if (!attempts.length) {
+          attempts.push({ withDocHeader: false });
+        }
+
+        let metaPayload;
+        for (let ai = 0; ai < attempts.length; ai++) {
+          const { withDocHeader } = attempts[ai];
+          const bodyParameterTexts =
+            buildInvoiceTemplateBodyTexts(withDocHeader);
+          const headerDocument =
+            withDocHeader && mediaUrl
+              ? { link: mediaUrl, filename: fileNameSafe }
+              : null;
+          try {
+            metaPayload = await sendWhatsAppCloudTemplateWithLanguageFallback({
+              phoneNumberId,
+              accessToken: accessTokenMeta,
+              graphApiVersion: graphApiVersion || undefined,
+              toDigits,
+              templateName: invoiceTemplateName,
+              languageCode: invoiceTemplateLanguage,
+              bodyParameterTexts,
+              headerDocument,
+            });
+            break;
+          } catch (e) {
+            if (ai === attempts.length - 1) {
+              throw e;
+            }
+            console.warn(
+              `[send-invoice] template try withDocHeader=${withDocHeader} failed: ${e?.message || e}; retrying…`
+            );
+          }
+        }
+
         const wid = metaPayload?.messages?.[0]?.id;
         return json(res, 200, {
           ok: true,
