@@ -24,12 +24,9 @@ function getLoose(map, expectedKey) {
 }
 
 /**
- * Send document + caption via Meta WhatsApp Cloud API (Graph).
- * @see https://developers.facebook.com/docs/whatsapp/cloud-api/guides/send-messages
- */
-/**
- * Utility template (e.g. smartbiz_invoice) — business-initiated without 24h session.
- * Body parameter count must match the approved template in WhatsApp Manager.
+ * Utility template (e.g. smartbiz_invoice) via Meta Cloud API.
+ * Body parameter count must match the approved template. Use whatsappCloud.invoiceTemplateLanguage
+ * exactly as in WhatsApp Manager (often en_US vs en) — (#132001) means locale mismatch.
  * @see https://developers.facebook.com/docs/whatsapp/cloud-api/guides/send-messages#template-messages
  */
 async function sendWhatsAppCloudTemplate({
@@ -97,6 +94,64 @@ async function sendWhatsAppCloudTemplate({
     throw err;
   }
   return data;
+}
+
+function isMetaTemplateTranslationError(err) {
+  const code = err?.metaBody?.error?.code;
+  if (code === 132001 || String(code) === "132001") return true;
+  const m = String(err?.message || err).toLowerCase();
+  return (
+    m.includes("132001") ||
+    m.includes("does not exist in the translation") ||
+    m.includes("template name does not exist in the translation")
+  );
+}
+
+/** Tries primary language, then common English variants for Meta (#132001). */
+async function sendWhatsAppCloudTemplateWithLanguageFallback({
+  phoneNumberId,
+  accessToken,
+  graphApiVersion,
+  toDigits,
+  templateName,
+  languageCode,
+  bodyParameterTexts,
+}) {
+  const primary = (languageCode || "en").trim() || "en";
+  const candidates = [primary];
+  const push = (c) => {
+    const t = (c || "").trim();
+    if (t && !candidates.includes(t)) candidates.push(t);
+  };
+  if (primary.toLowerCase() === "en") push("en_US");
+  if (primary.toLowerCase() === "en_us") push("en");
+  push("en_US");
+  push("en");
+
+  let lastErr;
+  for (let i = 0; i < candidates.length; i++) {
+    const lang = candidates[i];
+    try {
+      return await sendWhatsAppCloudTemplate({
+        phoneNumberId,
+        accessToken,
+        graphApiVersion,
+        toDigits,
+        templateName,
+        languageCode: lang,
+        bodyParameterTexts,
+      });
+    } catch (e) {
+      lastErr = e;
+      const canRetry =
+        isMetaTemplateTranslationError(e) && i < candidates.length - 1;
+      if (!canRetry) throw e;
+      console.warn(
+        `[send-invoice] template lang "${lang}" failed (${e?.message}), retrying…`
+      );
+    }
+  }
+  throw lastErr;
 }
 
 async function sendWhatsAppCloudDocument({
@@ -401,7 +456,7 @@ export default async function handler(req, res) {
       }
 
       if (invoiceTemplateName) {
-        const metaPayload = await sendWhatsAppCloudTemplate({
+        const metaPayload = await sendWhatsAppCloudTemplateWithLanguageFallback({
           phoneNumberId,
           accessToken: accessTokenMeta,
           graphApiVersion: graphApiVersion || undefined,
