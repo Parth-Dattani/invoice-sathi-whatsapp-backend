@@ -50,16 +50,21 @@ Set:
 **Meta Cloud API — utility template (no 24h session):** on the same company document, under `whatsappCloud`:
 
 - `invoiceTemplateName` (string), e.g. `smartbiz_invoice` — when set, `/api/whatsapp/send-invoice` sends a **template** message instead of a document. Omit or use `""` to keep **document** mode.
-- `invoiceTemplateLanguage` (string, optional) — default `en`.
+- `invoiceTemplateLanguage` (string, optional) — must match the template’s locale in **WhatsApp Manager** (often `en_US` not `en`). If omitted, default is `en`; the server retries several English locales when Meta returns **#132001**.
+- `invoiceTemplateLanguageCandidates` (array of strings, optional) — extra locale codes to try first (e.g. `["en","en_GB"]`) if Manager shows a non-default code.
+- `invoiceTemplateNamespace` (string, optional) — only if Meta / your BSP requires `template.namespace` on send; usually **omit** for Cloud API + Phone Number ID.
+- Requests use `language.policy: "deterministic"` (helps some **#132001** cases).
 - `invoiceTemplateBodyParams` (array of strings, optional) — must match your template’s `{{1}}`, `{{2}}`, … order. If omitted, the server sends `[companyName, customerName, invoiceNo, amount]` (4 texts).
-- `invoiceTemplateIncludePdfLink` (bool, optional) — if `true`, appends the public PDF URL as a 5th body parameter (only if your template has a fifth placeholder).
+- `invoiceTemplateIncludePdfLink` (bool, optional) — if `true`, appends the public PDF URL as a 5th **body** parameter (only when **not** sending a document header). Use when the template has no PDF header but a URL placeholder in the body.
+- `invoiceTemplateDocumentHeader` (bool, optional) — if `true`, only send the **document header** (PDF link) + body. If `false`, never send a document header. If omitted, the server **tries document header first**, then retries **body-only** (covers both “Loading PDF…” templates and plain text templates).
 
 ---
 
 ## Google Drive auto PDF delete (nightly)
 
 1. **`POST /api/google/store-drive-refresh`** — After **Google sign-in on Android**, Flutter sends `serverAuthCode`; this route exchanges it for a **refresh token** and saves `users/{uid}.googleDriveRefreshToken` (Admin SDK).
-2. **`GET /api/cron/cleanup-drive-pdfs`** — Vercel Cron (see `vercel.json`, default **18:30 UTC ≈ 00:00 IST**) trashes all **PDF** files in each user’s `pdfFolderId` (and each `users/{uid}/companies/*` `pdfFolderId` if set).
+2. **`POST /api/google/drive-access-token`** — Header `Authorization: Bearer <Firebase ID token>`. Returns `{ ok: true, accessToken }` using the stored refresh token (same env vars as cron). Used by the app when the **client-side Google silent sign-in** token is missing or expired, so **Drive PDF upload** keeps working.
+3. **`GET /api/cron/cleanup-drive-pdfs`** — Vercel Cron (see `vercel.json`, default **18:30 UTC ≈ 00:00 IST**) trashes all **PDF** files in each user’s `pdfFolderId` (and each `users/{uid}/companies/*` `pdfFolderId` if set).
 
 ### User requirements
 
