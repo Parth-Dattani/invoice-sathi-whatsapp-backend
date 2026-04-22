@@ -502,6 +502,20 @@ export default async function handler(req, res) {
         .toString()
         .trim() || "en";
 
+      if (isDebug()) {
+        const tokenHint =
+          accessTokenMeta.length >= 10
+            ? `${accessTokenMeta.slice(0, 6)}…${accessTokenMeta.slice(-4)}`
+            : "(short)";
+        console.warn(
+          `[send-invoice][debug] meta_config uid=${decoded.uid} companyId=${String(companyId).trim()} ` +
+            `phoneNumberId=${phoneNumberId} accessToken=${tokenHint} graph=${graphApiVersion || "(default)"} ` +
+            `templateName=${invoiceTemplateName || "(none)"} templateLang=${invoiceTemplateLanguage || "(none)"} ` +
+            `payloadName=${payloadName || "(none)"} payloadLang=${payloadLang || "(none)"} ` +
+            `companyRootTemplate=${companyRootTemplate || "(none)"} companyRootLang=${companyRootLang || "(none)"}`
+        );
+      }
+
       const invoiceTemplateNamespaceRaw =
         wc.invoiceTemplateNamespace ??
         wc.templateNamespace ??
@@ -684,14 +698,19 @@ export default async function handler(req, res) {
     console.error("[send-invoice] unhandled", e);
     const errMsg = e?.message || String(e);
     // Expose Meta error details only in DEBUG mode.
-    const debug =
-      isDebug() && e?.metaHttpStatus
-        ? {
-            metaHttpStatus: e.metaHttpStatus,
-            metaBody: e.metaBody,
-          }
-        : undefined;
-    return json(res, 500, { ok: false, error: errMsg, ...(debug ? { debug } : {}) });
+    const debug = isDebug()
+      ? {
+          metaHttpStatus: e?.metaHttpStatus,
+          metaBody: e?.metaBody,
+          hint:
+            "If you see #132001 for all en/en_US/en_GB candidates, token+phoneNumberId likely belong to a different WABA than the template.",
+        }
+      : undefined;
+    return json(res, 500, {
+      ok: false,
+      error: errMsg,
+      ...(debug ? { debug } : {}),
+    });
   }
 }
 
