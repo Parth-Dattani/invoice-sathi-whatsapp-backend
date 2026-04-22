@@ -349,6 +349,9 @@ export default async function handler(req, res) {
       driveUrl,
       customerName,
       companyName,
+      // Flutter app can pass these so backend doesn't need hardcoded template/locale.
+      templateName: payloadTemplateName,
+      languageCode: payloadLanguageCode,
     } = payload || {};
 
     if (!companyId || !toPhoneE164 || !invoiceNo || !driveUrl) {
@@ -463,20 +466,39 @@ export default async function handler(req, res) {
         });
       }
 
-      // Approved utility template (e.g. smartbiz_invoice) — set whatsappCloud.invoiceTemplateName on the company doc.
+      // Approved utility template (e.g. smartbiz_invoice).
+      // Priority: request JSON → company root → whatsappCloud.
       // Omit or set to "" to keep sending a document only (24h session may be required).
+      const companyRootTemplate = String(
+        company.whatsappTemplateName ?? ""
+      ).trim();
+      const companyRootLang = String(
+        company.whatsappTemplateLanguage ?? ""
+      ).trim();
+
+      const payloadName =
+        (payloadTemplateName && String(payloadTemplateName).trim()) ||
+        String(getLoose(payload, "whatsappTemplateName") ?? "").trim() ||
+        "";
+      const payloadLang =
+        (payloadLanguageCode && String(payloadLanguageCode).trim()) ||
+        String(getLoose(payload, "whatsappTemplateLanguage") ?? "").trim() ||
+        "";
+
       const invoiceTemplateNameRaw =
-        wc.invoiceTemplateName ?? getLoose(wc, "invoiceTemplateName");
+        payloadName ||
+        companyRootTemplate ||
+        (wc.invoiceTemplateName ?? getLoose(wc, "invoiceTemplateName"));
       const invoiceTemplateName = (invoiceTemplateNameRaw ?? "")
         .toString()
         .trim();
       const invoiceTemplateLanguageRaw =
-        wc.invoiceTemplateLanguage ??
-        wc.invoiceTemplateLanguageCode ??
-        getLoose(wc, "invoiceTemplateLanguage");
-      const invoiceTemplateLanguage = (
-        invoiceTemplateLanguageRaw ?? "en"
-      )
+        payloadLang ||
+        companyRootLang ||
+        (wc.invoiceTemplateLanguage ??
+          wc.invoiceTemplateLanguageCode ??
+          getLoose(wc, "invoiceTemplateLanguage"));
+      const invoiceTemplateLanguage = (invoiceTemplateLanguageRaw ?? "en")
         .toString()
         .trim() || "en";
 
@@ -660,7 +682,16 @@ export default async function handler(req, res) {
     return json(res, 200, { ok: true, provider: "twilio", sid: msg.sid });
   } catch (e) {
     console.error("[send-invoice] unhandled", e);
-    return json(res, 500, { ok: false, error: e?.message || String(e) });
+    const errMsg = e?.message || String(e);
+    // Expose Meta error details only in DEBUG mode.
+    const debug =
+      isDebug() && e?.metaHttpStatus
+        ? {
+            metaHttpStatus: e.metaHttpStatus,
+            metaBody: e.metaBody,
+          }
+        : undefined;
+    return json(res, 500, { ok: false, error: errMsg, ...(debug ? { debug } : {}) });
   }
 }
 
