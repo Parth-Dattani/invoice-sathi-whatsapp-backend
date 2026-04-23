@@ -538,11 +538,19 @@ export default async function handler(req, res) {
       const docHeaderExplicitFalse =
         wc.invoiceTemplateDocumentHeader === false ||
         getLoose(wc, "invoiceTemplateDocumentHeader") === false;
+      const bodyParamCountRaw =
+        wc.invoiceTemplateBodyParamCount ??
+        getLoose(wc, "invoiceTemplateBodyParamCount");
+      const bodyParamCount = Number.isFinite(Number(bodyParamCountRaw))
+        ? Number(bodyParamCountRaw)
+        : 0;
 
       function buildInvoiceTemplateBodyTexts(forDocumentHeaderAttempt) {
         const overrideParams = wc.invoiceTemplateBodyParams;
         if (Array.isArray(overrideParams) && overrideParams.length > 0) {
-          return overrideParams.map((x) => String(x ?? ""));
+          const xs = overrideParams.map((x) => String(x ?? ""));
+          if (bodyParamCount > 0) return xs.slice(0, bodyParamCount);
+          return xs;
         }
         const co =
           (companyName && String(companyName).trim()) || " ";
@@ -566,15 +574,22 @@ export default async function handler(req, res) {
         ) {
           texts.push(String(mediaUrl));
         }
+        if (bodyParamCount > 0) {
+          // Force parameter count to match template placeholders.
+          if (texts.length > bodyParamCount) return texts.slice(0, bodyParamCount);
+          while (texts.length < bodyParamCount) texts.push(" ");
+        }
         return texts;
       }
 
       if (invoiceTemplateName) {
         const attempts = [];
-        if (!docHeaderExplicitFalse && mediaUrl) {
+        // Default: DO NOT send document header unless explicitly enabled.
+        // This avoids (#132000) for templates without a header component.
+        if (docHeaderExplicitTrue && mediaUrl) {
           attempts.push({ withDocHeader: true });
         }
-        if (!docHeaderExplicitTrue) {
+        if (!docHeaderExplicitTrue || docHeaderExplicitFalse) {
           attempts.push({ withDocHeader: false });
         }
         if (!attempts.length) {
