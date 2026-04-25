@@ -139,6 +139,17 @@ function isMetaTemplateTranslationError(err) {
   );
 }
 
+function isMetaTemplateParamCountError(err) {
+  const code = err?.metaBody?.error?.code;
+  if (code === 132000 || String(code) === "132000") return true;
+  const m = String(err?.message || err).toLowerCase();
+  return (
+    m.includes("132000") ||
+    m.includes("number of parameters does not match") ||
+    m.includes("expected number of params")
+  );
+}
+
 /** Tries primary language, then common English variants for Meta (#132001). */
 function buildTemplateLanguageCandidates(primaryRaw, extraFromFirestore) {
   const primary = (primaryRaw || "en").trim() || "en";
@@ -557,6 +568,7 @@ export default async function handler(req, res) {
         const cn =
           (customerName && String(customerName).trim()) || "Customer";
         const inv = String(invoiceNo).trim();
+        const invDigits = inv.replace(/\D/g, "").trim() || inv;
         let amt = "₹0";
         if (typeof amount === "number" && Number.isFinite(amount)) {
           amt = `₹${amount}`;
@@ -567,7 +579,12 @@ export default async function handler(req, res) {
         ) {
           amt = `₹${String(amount).trim()}`;
         }
-        const texts = [co, cn, inv, amt];
+        // Special-case: many simple templates use {{1}}=customer name and {{2}}=invoice number (often Number type).
+        // When placeholders are exactly 2, map accordingly to avoid Meta #132012.
+        const texts =
+          bodyParamCount === 2
+            ? [cn, invDigits]
+            : [co, cn, inv, amt];
         if (
           !forDocumentHeaderAttempt &&
           includePdfInBodyWhenNoHeader
@@ -599,14 +616,16 @@ export default async function handler(req, res) {
         let metaPayload;
         for (let ai = 0; ai < attempts.length; ai++) {
           const { withDocHeader } = attempts[ai];
-          const bodyParameterTexts =
-            buildInvoiceTemplateBodyTexts(withDocHeader);
           const headerDocument =
             withDocHeader && mediaUrl
               ? { link: mediaUrl, filename: fileNameSafe }
               : null;
-          try {
-            metaPayload = await sendWhatsAppCloudTemplateWithLanguageFallback({
+
+          // First attempt uses configured/default body params.
+          const baseTexts = buildInvoiceTemplateBodyTexts(withDocHeader);
+
+          async function trySendWithTexts(bodyParameterTexts) {
+            return await sendWhatsAppCloudTemplateWithLanguageFallback({
               phoneNumberId,
               accessToken: accessTokenMeta,
               graphApiVersion: graphApiVersion || undefined,
@@ -618,8 +637,33 @@ export default async function handler(req, res) {
               templateNamespace: invoiceTemplateNamespace || undefined,
               extraLanguageCodes,
             });
+          }
+
+          try {
+            metaPayload = await trySendWithTexts(baseTexts);
             break;
           } catch (e) {
+            // If template placeholder count is unknown, brute-force body param count.
+            if (isMetaTemplateParamCountError(e)) {
+              const maxTry = 8;
+              for (let n = 1; n <= maxTry; n++) {
+                const xs = baseTexts.slice(0, n);
+                while (xs.length < n) xs.push(" ");
+                try {
+                  metaPayload = await trySendWithTexts(xs);
+                  break;
+                } catch (e2) {
+                  if (!isMetaTemplateParamCountError(e2) || n === maxTry) {
+                    throw e2;
+                  }
+                  console.warn(
+                    `[send-invoice] paramCount ${n} failed (${e2?.message}); retrying…`
+                  );
+                }
+              }
+              if (metaPayload) break;
+            }
+
             if (ai === attempts.length - 1) {
               throw e;
             }
