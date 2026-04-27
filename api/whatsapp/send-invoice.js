@@ -37,6 +37,7 @@ async function sendWhatsAppCloudTemplate({
   templateName,
   languageCode,
   bodyParameterTexts,
+  bodyParameterNames,
   headerDocument,
   templateNamespace,
 }) {
@@ -68,12 +69,19 @@ async function sendWhatsAppCloudTemplate({
     });
   }
   if (bodyParameterTexts && bodyParameterTexts.length > 0) {
+    const names = Array.isArray(bodyParameterNames) ? bodyParameterNames : [];
     components.push({
       type: "body",
-      parameters: bodyParameterTexts.map((t) => ({
-        type: "text",
-        text: String(t ?? "").slice(0, 1024),
-      })),
+      parameters: bodyParameterTexts.map((t, i) => {
+        const p = {
+          type: "text",
+          text: String(t ?? "").slice(0, 1024),
+        };
+        const pn = String(names[i] ?? "").trim();
+        // For templates using named variables ({{customer_name}} etc), Meta requires parameter_name.
+        if (pn) p.parameter_name = pn;
+        return p;
+      }),
     });
   }
 
@@ -199,6 +207,7 @@ async function sendWhatsAppCloudTemplateWithLanguageFallback({
   templateName,
   languageCode,
   bodyParameterTexts,
+  bodyParameterNames,
   headerDocument,
   templateNamespace,
   extraLanguageCodes,
@@ -220,6 +229,7 @@ async function sendWhatsAppCloudTemplateWithLanguageFallback({
         templateName,
         languageCode: lang,
         bodyParameterTexts,
+        bodyParameterNames,
         headerDocument,
         templateNamespace,
       });
@@ -572,6 +582,12 @@ export default async function handler(req, res) {
       const bodyParamCount = Number.isFinite(Number(bodyParamCountRaw))
         ? Number(bodyParamCountRaw)
         : 0;
+      const bodyParamNamesRaw =
+        wc.invoiceTemplateBodyParamNames ??
+        getLoose(wc, "invoiceTemplateBodyParamNames");
+      const bodyParamNames = Array.isArray(bodyParamNamesRaw)
+        ? bodyParamNamesRaw.map((x) => String(x ?? "").trim()).filter(Boolean)
+        : [];
 
       function buildInvoiceTemplateBodyTexts(forDocumentHeaderAttempt) {
         const overrideParams = wc.invoiceTemplateBodyParams;
@@ -650,6 +666,12 @@ export default async function handler(req, res) {
               templateName: invoiceTemplateName,
               languageCode: invoiceTemplateLanguage,
               bodyParameterTexts,
+              bodyParameterNames:
+                bodyParamNames.length > 0
+                  ? bodyParameterTexts.map((_, i) => bodyParamNames[i] || "")
+                  : (bodyParamCount === 2
+                      ? ["customer_name", "invoice_id"]
+                      : undefined),
               headerDocument,
               templateNamespace: invoiceTemplateNamespace || undefined,
               extraLanguageCodes,
