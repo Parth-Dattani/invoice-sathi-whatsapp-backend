@@ -82,7 +82,6 @@ async function sendWhatsAppCloudTemplate({
     name: String(templateName || "").trim(),
     language: {
       code: langCode,
-      policy: "deterministic",
     },
   };
   const ns = (templateNamespace || "").toString().trim();
@@ -115,6 +114,24 @@ async function sendWhatsAppCloudTemplate({
     data = { raw: text };
   }
   if (!r.ok) {
+    // Helpful debug in Vercel logs: show full error_data when present.
+    try {
+      if (data?.error) {
+        console.error(
+          "[send-invoice][meta-error]",
+          JSON.stringify(
+            {
+              status: r.status,
+              message: data?.error?.message,
+              code: data?.error?.code,
+              error_data: data?.error?.error_data,
+            },
+            null,
+            2
+          )
+        );
+      }
+    } catch (_) {}
     const msg =
       data?.error?.message ||
       data?.error?.error_user_msg ||
